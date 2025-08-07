@@ -176,7 +176,7 @@ def main():
             with col1:
                 st.metric("Total Places", len(filtered_df))
             with col2:
-                spooky_count = filtered_df['spooky'].sum()
+                spooky_count = filtered_df['spooky'].astype(str).str.lower().eq("true").sum()
                 st.metric("Spooky Places", spooky_count)
             with col3:
                 avg_distance = filtered_df['distance_from_pune_km'].mean()
