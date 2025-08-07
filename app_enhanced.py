@@ -32,7 +32,7 @@ def load_data():
         df['coordinates'] = df['coordinates'].apply(ast.literal_eval)
         return df
     except FileNotFoundError:
-        df = pd.read_csv('places.csv')
+        df = pd.read_csv('places.csv', encoding='ISO-8859-1')
         df['subcategory'] = df['category']
         df['coordinates'] = df['coordinates'].apply(ast.literal_eval)
         return df
@@ -75,7 +75,7 @@ def get_weekend_picks(df, num_picks=3):
 # Display Card
 def display_place_card(place, card_id):
     with st.container():
-        st.markdown(f"### 📍 {place['name']}")
+        st.markdown(f"### 📍 {place['place_name']}")
         icon = CATEGORY_ICONS.get(place['category'], '🏷️')
         st.markdown(f"**{icon} {place['category']}** • **{place['subcategory']}**")
         
