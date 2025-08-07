@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Page configuration
 st.set_page_config(
-    page_title="Pune Hidden Gem",
+    page_title="Pune Weekend Diaries",
     page_icon="🗓️",
     layout="wide",
     initial_sidebar_state="expanded"
