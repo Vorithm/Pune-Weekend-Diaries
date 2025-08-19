@@ -15,7 +15,6 @@ st.set_page_config(
 )
 
 # --- HELPER FUNCTION TO ENCODE IMAGE ---
-# This function reads an image file and converts it to a base64 string
 def img_to_base64(img_path):
     try:
         img_bytes = Path(img_path).read_bytes()
@@ -24,18 +23,65 @@ def img_to_base64(img_path):
     except FileNotFoundError:
         return None
 
-# Load data
+# --- DATA LOADER WITH TYPE SANITIZATION ---
 @st.cache_data
 def load_data():
+    # Try reading main CSV, fallback to alternate
     try:
         df = pd.read_csv('places_expand.csv')
-        df['coordinates'] = df['coordinates'].apply(ast.literal_eval)
-        return df
     except FileNotFoundError:
         df = pd.read_csv('places.csv', encoding='ISO-8859-1')
-        df['subcategory'] = df['category']
-        df['coordinates'] = df['coordinates'].apply(ast.literal_eval)
-        return df
+        if 'subcategory' not in df.columns and 'category' in df.columns:
+            df['subcategory'] = df['category']
+
+    # Standardize column names (strip spaces)
+    df.columns = [c.strip() for c in df.columns]
+
+    # Ensure required columns exist
+    required_cols = [
+        'place_name', 'category', 'subcategory', 'description', 'location',
+        'best_time_to_visit', 'facts', 'rules', 'spooky',
+        'distance_from_pune_km', 'id', 'map_link'
+    ]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Coerce distance to numeric (extract numeric part if values like '25 km')
+    df['distance_from_pune_km'] = (
+        pd.to_numeric(
+            df['distance_from_pune_km']
+            .astype(str)
+            .str.extract(r'([0-9]*\.?[0-9]+)', expand=False),
+            errors='coerce'
+        )
+        .astype(float)
+    )
+
+    # Normalize spooky to boolean
+    df['spooky'] = (
+        df['spooky']
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin(['true', '1', 'yes', 'y'])
+    )
+
+    # Fill text columns to avoid NaN issues in .str.contains
+    text_cols = [
+        'best_time_to_visit', 'category', 'subcategory', 'description',
+        'location', 'facts', 'rules', 'place_name', 'map_link'
+    ]
+    for c in text_cols:
+        df[c] = df[c].fillna('')
+
+    # Ensure id is present and usable
+    if 'id' in df.columns and df['id'].notna().any():
+        df['id'] = df['id'].astype(str).fillna('')
+    else:
+        df['id'] = (df['place_name'].fillna('').str[:20] + '_' + df.index.astype(str))
+
+    return df
 
 # Category Icons
 CATEGORY_ICONS = {
@@ -64,13 +110,20 @@ SECRET_TIPS = [
 
 # Weekend Picks
 def get_weekend_picks(df, num_picks=3):
+    # NaN-safe contains and distance handling
     weekend_places = df[
-        (df['best_time_to_visit'].str.contains('Anytime', case=False)) |
-        (df['best_time_to_visit'].str.contains('Evening', case=False)) |
-        (df['best_time_to_visit'].str.contains('Sunset', case=False)) |
-        (df['distance_from_pune_km'] <= 30)
+        (df['best_time_to_visit'].str.contains('Anytime', case=False, na=False)) |
+        (df['best_time_to_visit'].str.contains('Evening', case=False, na=False)) |
+        (df['best_time_to_visit'].str.contains('Sunset', case=False, na=False)) |
+        (df['distance_from_pune_km'].fillna(float('inf')) <= 30)
     ]
-    return weekend_places.sample(n=num_picks) if len(weekend_places) >= num_picks else df.sample(n=num_picks)
+    if len(weekend_places) >= num_picks:
+        return weekend_places.sample(n=num_picks, random_state=random.randint(0, 10_000))
+    # Fallback to any places with valid numeric distance first, else any
+    fallback = df.dropna(subset=['distance_from_pune_km'])
+    if len(fallback) >= num_picks:
+        return fallback.sample(n=num_picks, random_state=random.randint(0, 10_000))
+    return df.sample(n=min(num_picks, len(df)), random_state=random.randint(0, 10_000))
 
 # Display Card
 def display_place_card(place, card_id):
@@ -78,24 +131,36 @@ def display_place_card(place, card_id):
         st.markdown(f"### 📍 {place['place_name']}")
         icon = CATEGORY_ICONS.get(place['category'], '🏷️')
         st.markdown(f"**{icon} {place['category']}** • **{place['subcategory']}**")
-        
+
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.markdown(f"**📖 Description:** {place['description']}")
-            st.markdown(f"**🌐 Location:** {place['location']}")
-            st.markdown(f"**📅 Best time to visit:** {place['best_time_to_visit']}")
-            st.markdown(f"**🧠 Interesting Fact:** {place['facts']}")
-            st.markdown(f"**⚠️ Rules:** {place['rules']}")
+            if str(place.get('description', '')).strip():
+                st.markdown(f"**📖 Description:** {place['description']}")
+            if str(place.get('location', '')).strip():
+                st.markdown(f"**🌐 Location:** {place['location']}")
+            if str(place.get('best_time_to_visit', '')).strip():
+                st.markdown(f"**📅 Best time to visit:** {place['best_time_to_visit']}")
+            if str(place.get('facts', '')).strip():
+                st.markdown(f"**🧠 Interesting Fact:** {place['facts']}")
+            if str(place.get('rules', '')).strip():
+                st.markdown(f"**⚠️ Rules:** {place['rules']}")
         with col2:
-            spooky_status = "Yes 👻" if place['spooky'] else "No 😊"
+            spooky_status = "Yes 👻" if bool(place['spooky']) else "No 😊"
             st.markdown(f"**👻 Spooky?** {spooky_status}")
-            st.markdown(f"**📏 Distance:** {place['distance_from_pune_km']} km")
-            st.markdown(f"**📍 Coordinates:** {place['coordinates'][0]:.4f}, {place['coordinates'][1]:.4f}")
+            dist_val = place.get('distance_from_pune_km')
+            if pd.notna(dist_val):
+                st.markdown(f"**📏 Distance:** {float(dist_val):.1f} km")
+            else:
+                st.markdown(f"**📏 Distance:** —")
             st.markdown(f"**🆔 ID:** {place['id']}")
-            
+
             map_link = place.get('map_link')
-            if map_link:
-                st.markdown(f'<a href="{map_link}" target="_blank" style="text-decoration:none;"><button style="padding: 0.5em 1em;">🗺️ View on Map</button></a>', unsafe_allow_html=True)
+            if isinstance(map_link, str) and map_link.strip():
+                st.markdown(
+                    f'<a href="{map_link}" target="_blank" style="text-decoration:none;">'
+                    f'<button style="padding: 0.5em 1em;">🗺️ View on Map</button></a>',
+                    unsafe_allow_html=True
+                )
         st.markdown("---")
 
 # Main App
@@ -107,8 +172,7 @@ def main():
     df = load_data()
 
     # --- Sidebar ---
-    
-    # ✅ **IMAGE MOVED TO THE TOP OF THE SIDEBAR**
+    # Image at top
     img_base64 = img_to_base64("Img.jpg")
     if img_base64:
         st.sidebar.markdown(
@@ -121,11 +185,10 @@ def main():
         )
     else:
         st.sidebar.warning("Image 'Img.jpg' not found.")
-    
-    # ✅ **"PICK YOUR VIBE" IS NOW BELOW THE IMAGE**
+
     st.sidebar.markdown("## 🧭 Pick Your Vibe")
-    
-    categories = sorted(df['category'].unique())
+
+    categories = sorted([c for c in df['category'].dropna().unique()])
     st.sidebar.markdown("### 🏷️ Main Categories")
     selected_categories = st.sidebar.multiselect(
         "Select destination categories:",
@@ -134,8 +197,8 @@ def main():
     )
 
     if selected_categories:
-        filtered_df = df[df['category'].isin(selected_categories)]
-        subcategories = sorted(filtered_df['subcategory'].unique())
+        filtered_df_for_sub = df[df['category'].isin(selected_categories)]
+        subcategories = sorted([s for s in filtered_df_for_sub['subcategory'].dropna().unique()])
         st.sidebar.markdown("### 🎪 Specific Types")
         selected_subcategories = st.sidebar.multiselect(
             "Select specific types (optional):",
@@ -145,12 +208,21 @@ def main():
     else:
         selected_subcategories = []
 
+    # Distance slider guard
+    max_distance_available = df['distance_from_pune_km'].dropna()
+    if not max_distance_available.empty:
+        max_dist_val = int(max_distance_available.max())
+        default_max = max_dist_val
+    else:
+        max_dist_val = 100
+        default_max = 100
+
     st.sidebar.markdown("## 📏 Distance from Pune")
     max_distance = st.sidebar.slider(
         "Maximum distance (km):",
         min_value=0,
-        max_value=int(df['distance_from_pune_km'].max()),
-        value=int(df['distance_from_pune_km'].max()),
+        max_value=max_dist_val if max_dist_val > 0 else 100,
+        value=default_max if default_max > 0 else 100,
         step=5
     )
 
@@ -164,7 +236,9 @@ def main():
         filtered_df = df[df['category'].isin(selected_categories)]
         if selected_subcategories:
             filtered_df = filtered_df[filtered_df['subcategory'].isin(selected_subcategories)]
-        filtered_df = filtered_df[filtered_df['distance_from_pune_km'] <= max_distance]
+        # Distance filter (NaN-safe by filling NaN with inf so they get excluded)
+        filtered_df = filtered_df[filtered_df['distance_from_pune_km'].fillna(float('inf')) <= float(max_distance)]
+
         if spooky_preference == "Only spooky places":
             filtered_df = filtered_df[filtered_df['spooky'] == True]
         elif spooky_preference == "Only non-spooky places":
@@ -176,14 +250,20 @@ def main():
             with col1:
                 st.metric("Total Places", len(filtered_df))
             with col2:
-                spooky_count = filtered_df['spooky'].astype(str).str.lower().eq("true").sum()
+                spooky_count = int(filtered_df['spooky'].sum())
                 st.metric("Spooky Places", spooky_count)
             with col3:
-                avg_distance = filtered_df['distance_from_pune_km'].mean()
-                st.metric("Avg Distance", f"{avg_distance:.1f} km")
+                if filtered_df['distance_from_pune_km'].notna().any():
+                    avg_distance = filtered_df['distance_from_pune_km'].mean()
+                    st.metric("Avg Distance", f"{avg_distance:.1f} km")
+                else:
+                    st.metric("Avg Distance", "—")
             with col4:
-                max_dist = filtered_df['distance_from_pune_km'].max()
-                st.metric("Max Distance", f"{max_dist} km")
+                if filtered_df['distance_from_pune_km'].notna().any():
+                    max_dist = filtered_df['distance_from_pune_km'].max()
+                    st.metric("Max Distance", f"{max_dist:.1f} km")
+                else:
+                    st.metric("Max Distance", "—")
 
             st.markdown("## 📊 Category Breakdown")
             category_counts = filtered_df['category'].value_counts()
@@ -220,14 +300,18 @@ def main():
     st.markdown("## 🎁 Feeling Lucky?")
     st.markdown("Click below and discover a hidden gem you didn’t expect!")
     if st.button("🎉 Surprise Me!"):
-        surprise = df.sample(1).iloc[0]
-        display_place_card(surprise, "surprise_card")
+        if len(df) > 0:
+            surprise = df.sample(1, random_state=random.randint(0, 10_000)).iloc[0]
+            display_place_card(surprise, "surprise_card")
+        else:
+            st.warning("No data available to surprise! Please check your CSV.")
 
-    # --- Secret Tips ---
+    # --- Diary Entries (placeholder) ---
     st.markdown("## 📓 Your Diary Entries")
     with st.container():
         st.info("📝 **Coming Soon!** Save your favorite places, add personal notes, and track your adventures!")
 
+    # --- Secret Tips ---
     st.markdown("## 🔐 Secret Tip of the Week")
     col1, col2 = st.columns(2)
     with col1:
